@@ -1,9 +1,8 @@
-name: Bulk Compile All Rules (MRS & SRS)
+name: Sync Rules (Clash YAML & Sing-box SRS)
 
-# 每天北京时间早上 6 点自动拉取上游最新规则并全量编译
 on:
   schedule:
-    - cron: '0 22 * * *' 
+    - cron: '0 22 * * *'
   workflow_dispatch: {}
 
 jobs:
@@ -16,49 +15,30 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # 1. 安装最新版 sing-box 核心
-      - name: Setup sing-box
+      - name: Sync Rules from Upstreams
         run: |
-          bash <(curl -fsSL https://sing-box.app/deb-install.sh)
-          sing-box version
-
-      # 2. 安装 Mihomo 核心
-      - name: Setup Mihomo
-        run: |
-          MIHOMO_VERSION="v1.18.2"
-          curl -sSL "https://github.com/MetaCubeX/mihomo/releases/download/${MIHOMO_VERSION}/mihomo-linux-amd64-${MIHOMO_VERSION}.gz" -o mihomo.gz
-          gzip -d mihomo.gz
-          chmod +x mihomo
-          sudo mv mihomo /usr/local/bin/mihomo
-          mihomo -v
-
-      # 3. 拉取上游库并进行全量批量编译
-      - name: Clone Upstream and Compile All
-        run: |
-          # 克隆黑矩阵源码仓库
-          git clone --depth 1 https://github.com/blackmatrix7/ios_rule_script.git upstream
-          
           mkdir -p publish/sing-box
-          mkdir -p publish/mihomo
+          mkdir -p publish/clash
           
-          echo ">>> 正在批量编译 Sing-box (.srs) 规则..."
-          find upstream/rule/SingBox -type f -name "*.json" | while read file; do
-            filename=$(basename "$file" .json)
-            sing-box rule-set compile "$file" -o "publish/sing-box/${filename}.srs" || true
-          done
-
-          echo ">>> 正在批量编译 Mihomo (.mrs) 规则..."
-          find upstream/rule/Clash -type f -name "*.yaml" | while read file; do
-            filename=$(basename "$file" .yaml)
-            mihomo convert-ruleset classical yaml "$file" mrs "publish/mihomo/${filename}.mrs" || true
-          done
+          # ==========================================
+          # 1. 获取 Sing-box 的 SRS 二进制文件
+          # 我们直接拉取 DustinWin 每日自动编译并清洗好的现成 SRS 文件
+          # ==========================================
+          echo ">>> 正在拉取 Sing-box (.srs) 二进制规则..."
+          curl -sSL "https://raw.githubusercontent.com/DustinWin/ruleset_geodata/sing-box/srs-proxy.srs" -o publish/sing-box/GlobalMedia.srs
+          curl -sSL "https://raw.githubusercontent.com/DustinWin/ruleset_geodata/sing-box/srs-direct.srs" -o publish/sing-box/ChinaMedia.srs
           
-          # 清理源码目录
-          rm -rf upstream
+          # ==========================================
+          # 2. 获取 Clash / Mihomo 的 YAML 文本文件
+          # 注意：因为黑矩阵规则是 classical 混合规则，无法转为 mrs
+          # 直接拉取 yaml 在 Mihomo 中以 classical 模式运行即可，内存占用依然极小
+          # ==========================================
+          echo ">>> 正在拉取 Clash (.yaml) 规则..."
+          curl -sSL "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/GlobalMedia/GlobalMedia.yaml" -o publish/clash/GlobalMedia.yaml
+          curl -sSL "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/ChinaMedia/ChinaMedia.yaml" -o publish/clash/ChinaMedia.yaml
 
-      # 4. 自动提交二进制文件
       - name: Commit and Push
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: Auto-compile ALL rules to MRS and SRS formats
+          commit_message: "Auto-sync updated rules"
           file_pattern: publish
