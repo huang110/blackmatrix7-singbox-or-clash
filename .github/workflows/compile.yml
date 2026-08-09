@@ -1,0 +1,80 @@
+name: Compile Binary Rules (MRS & SRS)
+
+# 触发条件：每天北京时间早上 6 点 (UTC 22:00) 自动执行，并支持手动点击触发
+on:
+  schedule:
+    - cron: '0 22 * * *' 
+  workflow_dispatch: 
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # 1. 安装最新版 sing-box 核心 (用于编译 .srs)
+      - name: Setup sing-box
+        run: |
+          bash <(curl -fsSL https://sing-box.app/deb-install.sh)
+          sing-box version
+
+      # 2. 安装 Mihomo 核心 (用于编译 .mrs)
+      - name: Setup Mihomo
+        run: |
+          # 下载最新的 mihomo 稳定版核心
+          MIHOMO_VERSION="v1.18.2"
+          curl -sSL "https://github.com/MetaCubeX/mihomo/releases/download/${MIHOMO_VERSION}/mihomo-linux-amd64-${MIHOMO_VERSION}.gz" -o mihomo.gz
+          gzip -d mihomo.gz
+          chmod +x mihomo
+          sudo mv mihomo /usr/local/bin/mihomo
+          mihomo -v
+
+      # 3. 下载并编译规则
+      - name: Compile SRS and MRS
+        run: |
+          # 创建存放二进制文件的目录
+          mkdir -p publish/sing-box
+          mkdir -p publish/mihomo
+          
+          # ==========================================
+          # Sing-box (.json 转换为 .srs)
+          # ==========================================
+          echo "Compiling Sing-box SRS..."
+          
+          # GlobalMedia (国际流媒体)
+          curl -sSL "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/SingBox/GlobalMedia/GlobalMedia.json" -o global.json
+          sing-box rule-set compile global.json -o publish/sing-box/GlobalMedia.srs
+          
+          # ChinaMedia (国内流媒体)
+          curl -sSL "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/SingBox/ChinaMedia/ChinaMedia.json" -o china.json
+          sing-box rule-set compile china.json -o publish/sing-box/ChinaMedia.srs
+          
+          # 清理临时 json 文件
+          rm *.json
+
+          # ==========================================
+          # Mihomo (.yaml 转换为 .mrs)
+          # ==========================================
+          echo "Compiling Mihomo MRS..."
+          
+          # GlobalMedia (国际流媒体) - 注意：blackmatrix7的规则是 classical 格式
+          curl -sSL "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/GlobalMedia/GlobalMedia.yaml" -o global.yaml
+          mihomo convert-ruleset classical yaml global.yaml mrs publish/mihomo/GlobalMedia.mrs
+          
+          # ChinaMedia (国内流媒体)
+          curl -sSL "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/ChinaMedia/ChinaMedia.yaml" -o china.yaml
+          mihomo convert-ruleset classical yaml china.yaml mrs publish/mihomo/ChinaMedia.mrs
+          
+          # 清理临时 yaml 文件
+          rm *.yaml
+
+      # 4. 自动提交并推送到你的 GitHub 仓库
+      - name: Commit and Push
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Auto-compile MRS and SRS binary rules"
+          file_pattern: "publish/*"
