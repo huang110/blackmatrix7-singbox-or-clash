@@ -36,9 +36,9 @@ jobs:
           # 1. 克隆黑矩阵源码仓库
           git clone --depth 1 https://github.com/blackmatrix7/ios_rule_script.git upstream
           
-          # 2. 注入强大的 Python 脚本，用于全自动转译所有规则
+          # 2. 注入 Python 脚本，引入 shutil 实现无损复制
           cat << 'EOF' > convert.py
-          import yaml, json, os, glob
+          import yaml, json, os, glob, shutil
 
           files = glob.glob('upstream/rule/Clash/**/*.yaml', recursive=True)
           for file in files:
@@ -68,7 +68,7 @@ jobs:
                   rules = {k:v for k,v in rules.items() if v}
                   if not rules: continue
                   
-                  # 组装 sing-box headless json 格式
+                  # 组装 sing-box JSON 格式
                   out = {'version': 1, 'rules': [rules]}
                   
                   filename = os.path.basename(file)
@@ -78,8 +78,8 @@ jobs:
                   with open(f"publish/sing-box/{name}.json", 'w', encoding='utf-8') as f:
                       json.dump(out, f)
                       
-                  # 将原生 YAML 复制出来，供 Clash/Mihomo 直接使用
-                  os.system(f"cp '{file}' 'publish/clash/{filename}'")
+                  # 使用 shutil.copy 安全无损地复制原生 YAML 文件
+                  shutil.copy(file, f"publish/clash/{filename}")
                   
               except Exception as e:
                   print(f"解析出错 {file}: {e}")
@@ -94,7 +94,7 @@ jobs:
           cd publish/sing-box
           for file in *.json; do
             sing-box rule-set compile "$file" -o "${file%.json}.srs" || true
-            rm "$file" # 编译完成后销毁 JSON 源文件
+            rm "$file" 
           done
           cd ../..
           
@@ -104,5 +104,5 @@ jobs:
       - name: Commit and Push
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "Auto-compile ALL rules for Clash and Sing-box"
+          commit_message: "Auto-compile ALL rules perfectly"
           file_pattern: publish
