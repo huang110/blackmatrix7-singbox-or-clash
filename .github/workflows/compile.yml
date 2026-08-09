@@ -1,8 +1,8 @@
-name: Sync Rules (Clash YAML & Sing-box SRS)
+name: Compile ALL Rules (Sing-box SRS & Clash YAML)
 
 on:
   schedule:
-    - cron: '0 22 * * *'
+    - cron: '0 22 * * *' 
   workflow_dispatch: {}
 
 jobs:
@@ -15,30 +15,94 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Sync Rules from Upstreams
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Setup sing-box
         run: |
-          mkdir -p publish/sing-box
+          bash <(curl -fsSL https://sing-box.app/deb-install.sh)
+          sing-box version
+
+      - name: Process and Compile All Rules
+        run: |
           mkdir -p publish/clash
+          mkdir -p publish/sing-box
           
-          # ==========================================
-          # 1. 获取 Sing-box 的 SRS 二进制文件
-          # 我们直接拉取 DustinWin 每日自动编译并清洗好的现成 SRS 文件
-          # ==========================================
-          echo ">>> 正在拉取 Sing-box (.srs) 二进制规则..."
-          curl -sSL "https://raw.githubusercontent.com/DustinWin/ruleset_geodata/sing-box/srs-proxy.srs" -o publish/sing-box/GlobalMedia.srs
-          curl -sSL "https://raw.githubusercontent.com/DustinWin/ruleset_geodata/sing-box/srs-direct.srs" -o publish/sing-box/ChinaMedia.srs
+          # 1. 克隆黑矩阵源码仓库
+          git clone --depth 1 https://github.com/blackmatrix7/ios_rule_script.git upstream
           
-          # ==========================================
-          # 2. 获取 Clash / Mihomo 的 YAML 文本文件
-          # 注意：因为黑矩阵规则是 classical 混合规则，无法转为 mrs
-          # 直接拉取 yaml 在 Mihomo 中以 classical 模式运行即可，内存占用依然极小
-          # ==========================================
-          echo ">>> 正在拉取 Clash (.yaml) 规则..."
-          curl -sSL "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/GlobalMedia/GlobalMedia.yaml" -o publish/clash/GlobalMedia.yaml
-          curl -sSL "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/ChinaMedia/ChinaMedia.yaml" -o publish/clash/ChinaMedia.yaml
+          # 2. 注入强大的 Python 脚本，用于全自动转译所有规则
+          cat << 'EOF' > convert.py
+          import yaml, json, os, glob
+
+          files = glob.glob('upstream/rule/Clash/**/*.yaml', recursive=True)
+          for file in files:
+              try:
+                  with open(file, 'r', encoding='utf-8') as f:
+                      data = yaml.safe_load(f)
+                  if not data or 'payload' not in data: 
+                      continue
+                      
+                  rules = {'domain_suffix':[], 'domain_keyword':[], 'domain':[], 'ip_cidr':[], 'process_name':[]}
+                  for line in data['payload']:
+                      if not isinstance(line, str): continue
+                      line = line.split('#')[0].strip()
+                      if not line: continue
+                      
+                      parts = line.split(',')
+                      if len(parts) < 2: continue
+                      
+                      t, v = parts[0].strip().upper(), parts[1].strip()
+                      
+                      if t == 'DOMAIN-SUFFIX': rules['domain_suffix'].append(v)
+                      elif t == 'DOMAIN-KEYWORD': rules['domain_keyword'].append(v)
+                      elif t == 'DOMAIN': rules['domain'].append(v)
+                      elif t in ['IP-CIDR', 'IP-CIDR6']: rules['ip_cidr'].append(v)
+                      elif t == 'PROCESS-NAME': rules['process_name'].append(v)
+                      
+                  rules = {k:v for k,v in rules.items() if v}
+                  if not rules: continue
+                  
+                  # 组装 sing-box headless json 格式
+                  out = {'version': 1, 'rules': [rules]}
+                  
+                  filename = os.path.basename(file)
+                  name = filename.replace('.yaml', '')
+                  
+                  # 导出 JSON 准备编译
+                  with open(f"publish/sing-box/{name}.json", 'w', encoding='utf-8') as f:
+                      json.dump(out, f)
+                      
+                  # 将原生 YAML 复制出来，供 Clash/Mihomo 直接使用
+                  os.system(f"cp '{file}' 'publish/clash/{filename}'")
+                  
+              except Exception as e:
+                  print(f"解析出错 {file}: {e}")
+          EOF
+          
+          # 3. 运行批量转化
+          echo ">>> 正在将 Clash 规则全量翻译为 Sing-box 格式..."
+          python convert.py
+          
+          # 4. 批量编译所有 JSON 为 SRS
+          echo ">>> 正在批量编译 .srs 二进制文件..."
+          cd publish/sing-box
+          for file in *.json; do
+            sing-box rule-set compile "$file" -o "${file%.json}.srs" || true
+            rm "$file" # 编译完成后销毁 JSON 源文件
+          done
+          cd ../..
+          
+          # 清理工作区
+          rm -rf upstream convert.py
 
       - name: Commit and Push
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "Auto-sync updated rules"
+          commit_message: "Auto-compile ALL rules for Clash and Sing-box"
           file_pattern: publish
