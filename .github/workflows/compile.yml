@@ -1,4 +1,83 @@
-name: Compile Binary Rules (MRS & SRS)
+name: Bulk Compile All Rules (MRS & SRS)
+
+# 每天北京时间早上 6 点自动拉取上游最新规则并全量编译
+on:
+  schedule:
+    - cron: '0 22 * * *' 
+  workflow_dispatch: 
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # 1. 安装最新版 sing-box 核心
+      - name: Setup sing-box
+        run: |
+          bash <(curl -fsSL https://sing-box.app/deb-install.sh)
+          sing-box version
+
+      # 2. 安装 Mihomo 核心
+      - name: Setup Mihomo
+        run: |
+          MIHOMO_VERSION="v1.18.2"
+          curl -sSL "https://github.com/MetaCubeX/mihomo/releases/download/${MIHOMO_VERSION}/mihomo-linux-amd64-${MIHOMO_VERSION}.gz" -o mihomo.gz
+          gzip -d mihomo.gz
+          chmod +x mihomo
+          sudo mv mihomo /usr/local/bin/mihomo
+          mihomo -v
+
+      # 3. 拉取上游库并进行全量批量编译
+      - name: Clone Upstream and Compile All
+        run: |
+          # 克隆黑矩阵源码仓库 (只拉取最新的一层以加快速度)
+          git clone --depth 1 https://github.com/blackmatrix7/ios_rule_script.git upstream
+          
+          # 创建存放所有二进制文件的目录
+          mkdir -p publish/sing-box
+          mkdir -p publish/mihomo
+          
+          # ==========================================
+          # 批量编译 Sing-box 所有规则 (.srs)
+          # ==========================================
+          echo ">>> 正在批量编译 Sing-box (.srs) 规则..."
+          
+          # 遍历上游 SingBox 文件夹下所有的 .json 文件
+          find upstream/rule/SingBox -type f -name "*.json" | while read file; do
+            # 提取文件名 (不带后缀)
+            filename=$(basename "$file" .json)
+            echo "正在编译: $filename.srs"
+            # 编译为 srs，添加 || true 防止个别残缺规则报错中断整个流程
+            sing-box rule-set compile "$file" -o "publish/sing-box/${filename}.srs" || true
+          done
+
+          # ==========================================
+          # 批量编译 Mihomo 所有规则 (.mrs)
+          # ==========================================
+          echo ">>> 正在批量编译 Mihomo (.mrs) 规则..."
+          
+          # 遍历上游 Clash 文件夹下所有的 .yaml 规则文件
+          find upstream/rule/Clash -type f -name "*.yaml" | while read file; do
+            filename=$(basename "$file" .yaml)
+            # 过滤掉无关的非规则配置文件 (如果有的话)
+            echo "正在编译: $filename.mrs"
+            mihomo convert-ruleset classical yaml "$file" mrs "publish/mihomo/${filename}.mrs" || true
+          done
+          
+          # 清理克隆的源码目录，不将其推送到你的仓库
+          rm -rf upstream
+
+      # 4. 自动提交几百个二进制文件到你的仓库
+      - name: Commit and Push
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Auto-compile ALL rules to MRS and SRS formats"
+          file_pattern: "publish/*"name: Compile Binary Rules (MRS & SRS)
 
 # 触发条件：每天北京时间早上 6 点 (UTC 22:00) 自动执行，并支持手动点击触发
 on:
